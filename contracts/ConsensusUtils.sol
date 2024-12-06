@@ -16,7 +16,7 @@ contract ConsensusUtils is EternalStorage, ValidatorSet {
   uint256 public constant DECIMALS = 10 ** 18;
   uint256 public constant MAX_VALIDATORS = 100;
   uint256 public constant MIN_STAKE = 1e23; // 100,000
-  uint256 public constant MAX_STAKE = 5e24; // 5,000,000
+  uint256 public constant MAX_STAKE = 1e25; // 10,000,000
   uint256 public constant CYCLE_DURATION_BLOCKS = 34560; // 48 hours [48*60*60/5]
   uint256 public constant SNAPSHOTS_PER_CYCLE = 0; // snapshot each 288 minutes [34560/10/60*5]
   uint256 public constant DEFAULT_VALIDATOR_FEE = 15e16; // 15%
@@ -391,10 +391,13 @@ contract ConsensusUtils is EternalStorage, ValidatorSet {
   }
 
   function _jailValidator(address _address) internal {
-    _pendingValidatorsRemove(_address);
-    _addJailedValidator(_address);
-    _setJailRelease(_address);
-    _resetStrikeReset(_address);
+    if(!isJailed(_address))
+    {
+      _pendingValidatorsRemove(_address);
+      _addJailedValidator(_address);
+      _setJailRelease(_address);
+      _resetStrikeReset(_address);
+    }
   }
 
   function _maintenance(address _address) internal {
@@ -422,23 +425,27 @@ contract ConsensusUtils is EternalStorage, ValidatorSet {
   function _jailedValidatorRemove(address _address) internal {
     bool found = false;
     uint256 removeIndex;
-    for (uint256 i; i < jailedValidatorsLength(); i++) {
-      if (_address == jailedValidatorsAtPosition(i)) {
-        removeIndex = i;
-        found = true;
-        break;
+    do {
+      found = false;
+      for (uint256 i; i < jailedValidatorsLength(); i++) {
+        if (_address == jailedValidatorsAtPosition(i)) {
+          removeIndex = i;
+          found = true;
+          break;
+        }
+      }
+      if (found) {
+        uint256 lastIndex = jailedValidatorsLength() - 1;
+        address lastValidator = jailedValidatorsAtPosition(lastIndex);
+        if (lastValidator != address(0)) {
+          _setJailedValidatorsAtPosition(removeIndex, lastValidator);
+        }
+        delete addressArrayStorage[JAILED_VALIDATORS][lastIndex];
+        addressArrayStorage[JAILED_VALIDATORS].length--;
+        // if the validator in on of the current validators
       }
     }
-    if (found) {
-      uint256 lastIndex = jailedValidatorsLength() - 1;
-      address lastValidator = jailedValidatorsAtPosition(lastIndex);
-      if (lastValidator != address(0)) {
-        _setJailedValidatorsAtPosition(removeIndex, lastValidator);
-      }
-      delete addressArrayStorage[JAILED_VALIDATORS][lastIndex];
-      addressArrayStorage[JAILED_VALIDATORS].length--;
-      // if the validator in on of the current validators
-    }
+    while (found == true);
   }
 
   function _pendingValidatorsRemove(address _address) internal {

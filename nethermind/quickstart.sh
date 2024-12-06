@@ -18,11 +18,18 @@ PERMISSION_PREFIX="sudo"
 
 OVERRIDE_VERSION_FILE=false
 VERSION_FILE="https://raw.githubusercontent.com/fuseio/fuse-network/master/Version"
-SPARK_VERSION_FILE="https://raw.githubusercontent.com/fuseio/fuse-network/master/Version_testNet"
 DOCKER_IMAGE_ORACLE_VERSION="3.0.0"
-DOCKER_IMAGE_FUSE_APP_VERSION="1.0.0"
-DOCKER_IMAGE_NM_CLIENT="nethermind-1.13.3-v3.0.0"
-DOCKER_IMAGE_NET_STATS_VERSION="1.0.0"
+DOCKER_IMAGE_FUSE_APP_VERSION="2.0.1"
+DOCKER_IMAGE_NM_CLIENT="nethermind-1.28.0-v6.0.3"
+SPARK_DOCKER_IMAGE_NM_CLIENT="nethermind-1.28.0-v6.0.3-alpha"
+DOCKER_IMAGE_NET_STATS_VERSION="2.0.1"
+BOOTNODES_LIST="enode://57ab1850bbd6cbdf48835d19ccf046efd1228e96c5a5db3a3cdbea3036838a99bd9fb9ff1cb708f34443766cf056e15a5d86d46adf431c15dbfe92af9ec65cf0@135.148.233.9:30303,enode://9001cf3b321c4c6035b95cf326b7b3524f238aa7bdcdd62f45cf51c4f5e3d0bce0cd5a714c109ebbe4a8806f2017bfd68902ab24e15ab1a2612a120923e31ae9@135.148.232.105:30303"
+
+# Directories
+BASE_DIR="$(pwd)/fusenet"
+DATABASE_DIR=$BASE_DIR/database
+LOGS_DIR=$BASE_DIR/logs
+KEYSTORE_DIR=$BASE_DIR/keystore
 
 # Valid role list
 declare -a VALID_ROLE_LIST=(
@@ -273,9 +280,6 @@ function setup() {
 
     if [ "$OVERRIDE_VERSION_FILE" == false ] ; then
         echo -e "\nGrab docker Versions"
-        if [[ $NETWORK == "spark" ]]; then
-            VERSION_FILE="$SPARK_VERSION_FILE"
-        fi
         wget -O versionFile $VERSION_FILE
         export $(grep -v '^#' versionFile | xargs)
     else
@@ -285,12 +289,15 @@ function setup() {
     # Specify image versions (generic)
     FUSE_CLIENT_DOCKER_REPOSITORY="fusenet/node"
     FUSE_CLIENT_DOCKER_IMAGE_VERSION="$DOCKER_IMAGE_NM_CLIENT"
+    if [[ $NETWORK == "spark" ]]; then
+        FUSE_CLIENT_DOCKER_IMAGE_VERSION="$SPARK_DOCKER_IMAGE_NM_CLIENT"
+    fi
 
     # Specify images / versions (Spark)
     SPARK_VALIDATOR_DOCKER_REPOSITORY="fusenet/spark-validator-app"
     SPARK_VALIDATOR_DOCKER_IMAGE_VERSION="$DOCKER_IMAGE_FUSE_APP_VERSION"
 
-    SPARK_NETSTATS_CLIENT_DOCKER_REPOSITORY="fusenet/spark-netstat"
+    SPARK_NETSTATS_CLIENT_DOCKER_REPOSITORY="fusenet/netstat"
     SPARK_NETSTATS_CLIENT_DOCKER_IMAGE_VERSION="$DOCKER_IMAGE_NET_STATS_VERSION"
 
     # Specify images / versions (Fuse)
@@ -358,13 +365,53 @@ function setup() {
 
     # Generate keystore file
     if [[ $ROLE == "validator" ]]; then
-        if ls $KEYSTORE_DIR/UTC--**; then
+        if [ -n "$(find "$KEYSTORE_DIR" -type f -name 'UTC--*' -print -quit)" ]; then
+            for keystore_file_path in "$KEYSTORE_DIR"/UTC--*; do
+                PUBLIC_ADDRESS=$($PERMISSION_PREFIX cat "$keystore_file_path" | jq -r '.address')
 
-            PUBLIC_ADDRESS=$($PERMISSION_PREFIX cat $KEYSTORE_DIR/UTC--* | jq -r '.address')
+                echo -e "\nPrivate key is present in directory. Your public address - 0x$PUBLIC_ADDRESS"
+                echo -e "\nChecking if key file matches expected format..."
 
-            echo -e "\nPrivate key is present in directory. You public address - 0x$PUBLIC_ADDRESS"
+                # Extract just the file name
+                keystore_file_name=$(basename "$keystore_file_path")
+                keystore_file_name=$(echo "$keystore_file_name" | tr -d '[:space:]')
+                echo "keystore_file_name: $keystore_file_name"
 
-            echo -e "\nSkipping creating new private key..."
+                # Check date format
+                if [[ $keystore_file_name =~ UTC--[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}-[0-9]{2}-[0-9]{2}\.[0-9]+Z ]]; then
+                    echo -e "\nDate format is correct...."
+
+                    # Check if 42 characters at the end are missing
+                    if [[ $keystore_file_name =~ .{42}$ ]]; then
+                        echo -e "\npublic address not found at the end."
+
+                        # Check if the fractional seconds part is missing
+                        if [[ $keystore_file_name != *.*Z* ]]; then
+                            echo -e "\nFractional seconds are missing. Appending..."
+                            stripped_name=$(echo "$keystore_file_name" | sed 's/\(.*\)--.*/\1/')
+                            stripped_name=$(echo "$stripped_name" | awk '{gsub(/Z$/, ".123456000Z")}1')
+                            new_file_name="$stripped_name--$PUBLIC_ADDRESS"
+                            mv "$keystore_file_path" "$KEYSTORE_DIR/$new_file_name"
+                        else
+                            echo -e "\nFractional seconds are present."
+                        fi
+                    else
+                        echo -e "\nAppending public address...."
+                        stripped_name=$(echo "$keystore_file_name" | sed 's/\(.*\)--.*/\1/')
+                        stripped_name=$(echo "$stripped_name" | awk '{gsub(/Z$/, ".123456000Z")}1')
+                        new_file_name="$stripped_name--$PUBLIC_ADDRESS"
+                        mv "$keystore_file_path" "$KEYSTORE_DIR/$new_file_name"
+                    fi
+                else
+                    echo -e "\nDate format is incorrect."
+                    stripped_name=$(echo "$keystore_file_name" | sed 's/\(.*\)--.*/\1/')
+                    stripped_name=$(echo "$stripped_name" | awk '{gsub(/Z$/, ".123456000Z")}1')
+                    new_file_name="$stripped_name--$PUBLIC_ADDRESS"
+                    mv "$keystore_file_path" "$KEYSTORE_DIR/$new_file_name"
+                fi
+
+                echo -e "\nSkipping creating a new private key..."
+            done
         else
             generate_eth_private_key
         fi
@@ -380,9 +427,34 @@ function run() {
 
     echo -e "\nDone!"
 
+    echo -e "\nGenerate processes.json file for 'netstats' Docker container..."
+
+    cat <<EOF > $BASE_DIR/processes.json
+[
+    {
+        "name": "netstats-agent",
+        "script": "app.js",
+        "log_date_format": "YYYY-MM-DD HH:mm Z",
+        "merge_logs": false,
+        "watch": false,
+        "max_restarts": 10,
+        "exec_interpreter": "node",
+        "exec_mode": "fork_mode"
+    }
+]
+EOF
+
+    echo -e "\nDone!"
+
     echo -e "\nRun Docker container for ${NETWORK^} network. Role - ${ROLE^}"
 
     # Specify needed variables (Spark)
+
+    # Netstats
+    if [[ $NETWORK == "spark" ]]; then
+        WS_SERVER="https://health.fusespark.io/ws"
+        WS_SECRET="i5WsUJWaMUHOS2CwvTRy"
+    fi
 
     # For node / bootnode
     if [[ $NETWORK == "spark" ]] && [[ $ROLE == "node" || $ROLE == "bootnode" ]]; then
@@ -417,6 +489,12 @@ function run() {
 
     # Specify needed variables (Fuse)
 
+    # Netstats
+    if [[ $NETWORK == "fuse" ]]; then
+        WS_SERVER="https://health.fuse.io/ws"
+        WS_SECRET="i5WsUJWaMUHOS2CwvTRy"
+    fi
+
     # For node / bootnode
     if [[ $NETWORK == "fuse" ]] && [[ $ROLE == "node" || $ROLE == "bootnode" ]]; then
         CONTAINER_NAME="fuse"
@@ -440,7 +518,7 @@ function run() {
     # For validator
     if [[ $NETWORK == "fuse" && $ROLE == "validator" ]]; then
         CONTAINER_NAME="fuse"
-        DB_PREFIX="fuse_validator"
+        DB_PREFIX="fuse"
         CONFIG="fuse_validator"
 
         VALIDATOR_DOCKER_IMAGE=$FUSE_VALIDATOR_DOCKER_IMAGE
@@ -459,6 +537,7 @@ function run() {
             --log-opt max-size=10m \
             --log-opt max-file=25 \
             --log-opt compress=true \
+            --hostname $CONTAINER_NAME \
             -p 30303:30300/tcp \
             -p 30303:30300/udp \
             -p 8545:8545 \
@@ -468,7 +547,10 @@ function run() {
             --config $CONFIG \
             --Init.WebSocketsEnabled true \
             --HealthChecks.Enabled true \
-            --HealthChecks.Slug /api/health
+            --HealthChecks.Slug /api/health \
+            --Discovery.Bootnodes $BOOTNODES_LIST \
+            --Network.Bootnodes $BOOTNODES_LIST \
+			--JsonRpc.EnabledModules "Eth,Web3,RPC,Net,Parity,Health"
 
         # Run Netstat
         $PERMISSION_PREFIX docker run \
@@ -480,10 +562,26 @@ function run() {
             --log-opt compress=true \
             --restart always \
             --memory "250m" \
+            --volume $BASE_DIR/processes.json:/app/processes.json \
+            --env NODE_ENV=production \
+            --env RPC_HOST=$CONTAINER_NAME \
+            --env RPC_PORT=8545 \
+            --env LISTENING_PORT=30303 \
+            --env INSTANCE_NAME=$NODE_KEY \
+            --env ROLE=${ROLE^} \
+            --env BRIDGE_VERSION="" \
+            --env FUSE_APP_VERSION="" \
+            --env NETSTATS_VERSION=$NETSTATS_VERSION \
+            --env PARITY_VERSION="" \
+            --env CONTACT_DETAILS="" \
+            --env WS_SERVER=$WS_SERVER \
+            --env WS_SECRET=$WS_SECRET \
+            --env VERBOSITY=2 \
+            --entrypoint pm2 \
             $NETSTATS_DOCKER_IMAGE \
-            --instance-name $NODE_KEY \
-            --role ${ROLE^} \
-            --netstats-version $NETSTATS_VERSION
+            start \
+            processes.json \
+            --no-daemon
     fi
 
     if [[ $ROLE == "validator" ]]; then
@@ -496,13 +594,19 @@ function run() {
             --log-opt max-size=10m \
             --log-opt max-file=25 \
             --log-opt compress=true \
+            --hostname $CONTAINER_NAME \
+            -p 8545:8545 \
             -p 30303:30300/tcp \
             -p 30303:30300/udp \
-            -p 8545:8545 \
-            -p 8546:8546 \
             --restart always \
             $FUSE_CLIENT_DOCKER_IMAGE \
             --config $CONFIG \
+            --JsonRpc.Enabled true \
+            --Discovery.Bootnodes $BOOTNODES_LIST \
+            --Network.Bootnodes $BOOTNODES_LIST \
+            --JsonRpc.EnabledModules [Eth,Web3,Personal,Net,Parity] \
+            --JsonRpc.Host 0.0.0.0 \
+            --JsonRpc.Port 8545 \
             --KeyStore.PasswordFiles "keystore/pass.pwd" \
             --KeyStore.EnodeAccount "0x$PUBLIC_ADDRESS" \
             --KeyStore.UnlockAccounts "0x$PUBLIC_ADDRESS" \
@@ -514,6 +618,7 @@ function run() {
         $PERMISSION_PREFIX docker run \
             --detach \
             --name "validator" \
+            --net container:$CONTAINER_NAME \
             --volume $KEYSTORE_DIR:/config/keys/FuseNetwork \
             --volume $KEYSTORE_DIR/pass.pwd:/config/pass.pwd \
             --restart always \
@@ -529,11 +634,26 @@ function run() {
             --log-opt compress=true \
             --restart always \
             --memory "250m" \
+            --volume $BASE_DIR/processes.json:/app/processes.json \
+            --env NODE_ENV=production \
+            --env RPC_HOST=$CONTAINER_NAME \
+            --env RPC_PORT=8545 \
+            --env LISTENING_PORT=30303 \
+            --env INSTANCE_NAME="${NODE_KEY}_0x${PUBLIC_ADDRESS}" \
+            --env ROLE=${ROLE^} \
+            --env BRIDGE_VERSION="" \
+            --env FUSE_APP_VERSION="1.0.0" \
+            --env NETSTATS_VERSION=$NETSTATS_VERSION \
+            --env PARITY_VERSION="" \
+            --env CONTACT_DETAILS="" \
+            --env WS_SERVER=$WS_SERVER \
+            --env WS_SECRET=$WS_SECRET \
+            --env VERBOSITY=2 \
+            --entrypoint pm2 \
             $NETSTATS_DOCKER_IMAGE \
-            --instance-name "${NODE_KEY}_0x${PUBLIC_ADDRESS}" \
-            --role ${ROLE^} \
-            --netstats-version $NETSTATS_VERSION \
-            --fuseapp-version "1.0.0"
+            start \
+            processes.json \
+            --no-daemon
     fi
 
     # Get ENODE public address
@@ -594,6 +714,7 @@ function generate_eth_private_key() {
 }
 
 function unlock_account() {
+    KEYSTORE_DIR=$BASE_DIR/keystore
     if [ ! "$(ls $KEYSTORE_DIR/UTC--**)" ]; then
         display_error_and_exit "No key store file found"
     fi
@@ -616,8 +737,7 @@ function lock_account() {
 
     PUBLIC_ADDRESS=$($PERMISSION_PREFIX cat $KEYSTORE_DIR/UTC--* | jq -r '.address')
 
-    RESULT=$(curl localhost:8545 -H 'Content-Type: application/json;charset=UTF-8' -H 'Accept: application/json, text/plain, /' -H 'Cache-Control: no-cache' -X \
-    POST --data '{"jsonrpc":"2.0","method":"personal_lockAccount","params":["'"$PUBLIC_ADDRESS"'"],"id":67}' | jq '.result')
+    RESULT=$(curl localhost:8545 -H 'Content-Type: application/json;charset=UTF-8' -H 'Accept: application/json, text/plain, /' -H 'Cache-Control: no-cache' -X POST --data '{"jsonrpc":"2.0","method":"personal_lockAccount","params":["'"$PUBLIC_ADDRESS"'"],"id":67}' | jq '.result')
 
     if [[ "$RESULT" != "true" ]]; then
         display_error_and_exit "Failed to lock account"
@@ -637,19 +757,18 @@ function send_tx_to_consensus() {
     unlock_account
 
     if [[ $NETWORK == "spark" ]]; then
-        CONSENSUS_ADDR="0xC8c3a332f9e4CE6bfFFcf967026cB006Db2311c7"
+        CONSENSUS_ADDR="0x8C682051D70301A0ca913Ce0A0e71539702E1122"
     else
         CONSENSUS_ADDR="0x3014ca10b91cb3D0AD85fEf7A3Cb95BCAc9c0f79"
     fi
 
     PUBLIC_ADDRESS=$($PERMISSION_PREFIX cat $KEYSTORE_DIR/UTC--* | jq -r '.address')
-    NONCE=$(curl localhost:8545 -H 'Content-Type: application/json;charset=UTF-8' -H 'Accept: application/json, text/plain, /' -H 'Cache-Control: no-cache' -X POST --data \
-    '{"jsonrpc":"2.0","method":"eth_getTransactionCount","params":["'"$PUBLIC_ADDRESS"'"],"id":67}' | jq '.result')
+    echo "$PUBLIC_ADDRESS"
+    NONCE=$(curl localhost:8545 -H 'Content-Type: application/json;charset=UTF-8' -H 'Accept: application/json, text/plain, /' -H 'Cache-Control: no-cache' -X POST --data '{"jsonrpc":"2.0","method":"eth_getTransactionCount","params":["'"$PUBLIC_ADDRESS"'"],"id":67}' | jq '.result')
+    NONCE=${NONCE:1:-1}
+    PUBLIC_ADDRESS="0x$PUBLIC_ADDRESS"
 
-
-    TXHASH=$(curl --data '{"jsonrpc":"2.0","method":"eth_sendTransaction","params":[{"from":"'"$PUBLIC_ADDRESS"'","to":"'"$CONSENSUS_ADDR"'","value":0, \
-    "Nonce":"'"$NONCE"'", "Gas":"1000000","GasPrice":"10000000000","ChainId":"122","Data":"'"$DATA"'"}],"id":67}' -H "Content-Type: application/json" -X POST localhost:8545 | jq '.result')
-
+    TXHASH=$(curl --data '{"jsonrpc":"2.0","method":"eth_sendTransaction","params":[{"from":"'"$PUBLIC_ADDRESS"'","to":"'"$CONSENSUS_ADDR"'","value":0,"Nonce":"'"$NONCE"'", "Gas":"1000000","GasPrice":"10000000000","ChainId":"122","Data":"'"$DATA"'"}],"id":67}' -H "Content-Type: application/json" -X POST localhost:8545)
     echo -e "\nRequest sent TX_ID = ${TXHASH}"
 
     lock_account

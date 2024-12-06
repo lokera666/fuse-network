@@ -9,7 +9,7 @@ QUICKSTART_VERSION="1.0.0"
 #set this to true to allow for hardcoded versioning for debugging
 OVERRIDE_VERSION_FILE=false
 VERSION_FILE="https://raw.githubusercontent.com/fuseio/fuse-network/master/Version"
-VERSION_FILE_LEGACY="https://raw.githubusercontent.com/fuseio/fuse-network/master/Version_legacy"
+VERSION_FILE_LEGACY="https://raw.githubusercontent.com/fuseio/fuse-network/master/commands/Version_legacy"
 DOCKER_IMAGE_ORACLE_VERSION="3.0.0"
 DOCKER_IMAGE_FUSE_APP_VERSION="1.0.0"
 DOCKER_IMAGE_FUSE_PARITY_VERSION="1.0.0"
@@ -41,8 +41,8 @@ REQUIRED_DRIVE_SPACE_MB=15360
 REQUIRED_RAM_MB=1800
 DEFAULT_GAS_ORACLE="https:\/\/ethgasstation.info\/json\/ethgasAPI.json"
 
-PARITY_SNAPSHOT="https://node-snapshot.s3.eu-central-1.amazonaws.com/db.tar.gz"
-OE_SNAPSHOT="https://node-snapshot-oe.s3.eu-central-1.amazonaws.com/db.tar.gz"
+PARITY_SNAPSHOT="https://fuse-snapshot-oe.s3.eu-central-1.amazonaws.com/db.tar.gz"
+OE_SNAPSHOT="https://fuse-snapshot-oe.s3.eu-central-1.amazonaws.com/db.tar.gz"
 BOOTNODE_FILE_FUSE="https://raw.githubusercontent.com/fuseio/fuse-network/master/config/bootnodes.txt"
 BOOTNODE_FILE_SPARK="https://raw.githubusercontent.com/fuseio/fuse-network/master/config/spark/bootnodes.txt"
 
